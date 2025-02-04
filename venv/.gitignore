@@ -1,0 +1,9 @@
+#Ignoring all GPSKet package files for the purpose of the MSc-Project-2025 Repository
+
+GPSKet-master/GPSKet/
+GPSKet-master/scripts/
+GPSKet-master/tests/
+GPSKet-master/tutorials/
+bin/
+include/
+lib/
