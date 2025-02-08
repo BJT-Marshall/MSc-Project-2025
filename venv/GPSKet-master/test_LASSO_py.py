@@ -22,33 +22,32 @@ from sklearn.linear_model import Lasso
 import matplotlib.pyplot as plt
 
 
-L = 10
-M = 5
-
 # Can be used to activate or deactivate a weighting of terms according to Psi^2 in the squared error loss function
 weight_according_to_amplitude_squared = False
 
 
 # -----------------Set Up (Hamiltonian, Hilbert Space, qGPS Model, Sampler, qGPS Variational Quantum State)-------------------------------
-ha = j1j2.get_J1_J2_Hamiltonian(Lx=L, J2=0.0, sign_rule=True, on_the_fly_en=True)
-hi = ha.hilbert
+def initialise_system(L,M):
 
-model = qGPS(hi, M, init_fun=GPSKet.nn.initializers.normal(1.0e-3), dtype=float)
+    ha = j1j2.get_J1_J2_Hamiltonian(Lx=L, J2=0.0, sign_rule=True, on_the_fly_en=True)
+    hi = ha.hilbert
 
-sa = nk.sampler.MetropolisExchange(hi, graph=ha.graph, n_chains_per_rank=1, d_max=L)
-vs = nk.vqs.MCState(sa, model, n_samples=50, chunk_size=1, seed=1)
+    model = qGPS(hi, M, init_fun=GPSKet.nn.initializers.normal(1.0e-3), dtype=float)
 
-# -----------------------------------------------------------------------------------------------------------------------------------------
+    sa = nk.sampler.MetropolisExchange(hi, graph=ha.graph, n_chains_per_rank=1, d_max=L)
+    vs = nk.vqs.MCState(sa, model, n_samples=50, chunk_size=1, seed=1)
 
-# epsilon = np.array(vs.parameters["epsilon"])
+    return vs, ha
 
+#Default used in the script
+vs, ha = initialise_system(L=10, M=5)
 
 # generate exact ground state data
 e, state = nk.exact.lanczos_ed(ha, compute_eigenvectors=True)
 
 energy = e[0]
 
-dataset_configs = jnp.array(hi.states_to_local_indices(hi.all_states()))
+dataset_configs = jnp.array(ha.hilbert.states_to_local_indices(ha.hilbert.all_states()))
 
 dataset_amplitudes = jnp.array(state.flatten())
 dataset_log_amplitudes = jnp.log(dataset_amplitudes * jnp.sign(dataset_amplitudes[0]))
@@ -58,6 +57,7 @@ dataset_log_amplitudes -= jnp.mean(
 dataset_log_amplitudes = dataset_log_amplitudes / jnp.std(
     dataset_log_amplitudes
 )  # Constrain the variance of the target data set to be 1
+
 
 
 # All the bellow are 252 elements long.
@@ -86,10 +86,11 @@ print(len(sampled_log_amps)) #Length of the samples passed as the second argumen
 
 # ---------------------------------------------------------------------------------------------------------------------------------
 
-
+from functools import partial
 # Fit model with Gradient descent type scheme
-@jax.jit
-def lossfun(epsilon, indices):
+
+@partial(jax.jit, static_argnames="vs")
+def lossfun(epsilon, indices, vs):
     inds = jnp.atleast_1d(
         indices
     )  # Another reformatting step to make sure the indices are in the correct format.
@@ -211,7 +212,7 @@ def test_iterations():
 
 
 # ----------------------------------------------------------------------------------------------------------------------------------------------
-def lasso_linear_sweeping(iterations: int, indices: list, alpha: float, weighted_according_to_psi_squared=False):
+def lasso_linear_sweeping(iterations: int, indices: list, alpha: float, vs, weighted_according_to_psi_squared=False,):
     """Lasso linear sweeping model for qGPS model to the ground state computed at the top of this code"""
     epsilon = np.array(vs.parameters["epsilon"])  # reset the epsilon tensor
     learning = QGPSLogSpaceFit(
@@ -228,7 +229,7 @@ def lasso_linear_sweeping(iterations: int, indices: list, alpha: float, weighted
         else:
             model.alpha = alpha
         
-        for site in np.arange(L):  # For each single site perform an optimisation cycle
+        for site in np.arange(ha.hilbert.size):  # For each single site perform an optimisation cycle
             learning.ref_sites = site
 
             learning.reset()
@@ -265,7 +266,7 @@ def lasso_linear_sweeping(iterations: int, indices: list, alpha: float, weighted
         sampled_log_amplitudes = vs._apply_fun({"params": {"epsilon": learning.epsilon}}, dataset_configs[indices])
 
         # Calculate Error
-        m_sq_error_full = lossfun(learning.epsilon, jnp.arange(len(dataset_log_amplitudes)))
+        m_sq_error_full = lossfun(learning.epsilon, indices, vs)
         m_sq_error_full_list.append(m_sq_error_full)
 
     return sampled_log_amplitudes, m_sq_error_full_list
@@ -277,7 +278,7 @@ def regularization_strength(indices, iterations, max_regularization):
     error_list = []
     alpha_list = []
     for alpha in range(int(100*max_regularization+1)):
-        _, single_error_list = lasso_linear_sweeping(iterations = iterations,indices = indices, alpha=alpha/100)
+        _, single_error_list = lasso_linear_sweeping(iterations = iterations,indices = indices, vs=vs, alpha=alpha/100)
         alpha_list.append(alpha/1000)
         error_list.append(single_error_list[-1])
 
@@ -285,15 +286,38 @@ def regularization_strength(indices, iterations, max_regularization):
     plt.show()
     return None
 
-indices = jnp.atleast_1d(jnp.arange(252))
+#indices = jnp.atleast_1d(jnp.arange(150))
 #regularization_strength(indices, 10, 0.1)
 
 
 
-_, error =lasso_linear_sweeping(iterations=10,indices = indices, alpha = 0.0)
+"""_, error =lasso_linear_sweeping(iterations=10,indices = indices, alpha = 0.0)
 _, error1 =lasso_linear_sweeping(iterations=10,indices = indices, alpha = 0.0, weighted_according_to_psi_squared=True)
 
 
 print(error[-1])
-print(error1[-1])
+print(error1[-1])"""
+
+
+def plot_support_dim(indices, iterations, max_M, min_M = 1):
+    error_list = []
+    M_list = [M for M in range(min_M, max_M+1)]
+    for M in M_list:
+        vs, _ = initialise_system(L=10, M=M)
+        _, error = lasso_linear_sweeping(iterations, indices, alpha = 0.01, vs=vs)
+        error_list.append(error[-1])
+    
+    #Plotting
+    plt.plot(M_list, error_list)
+    plt.title("Least-Squares Error of LASSO Estimator with varied support dimension, M", fontsize = 10)
+    plt.xlabel("M")
+    plt.xticks(M_list)
+    plt.ylabel("Least-Squares Error")
+    plt.show()
+
+    return None
+
+#indices = jnp.atleast_1d(jnp.arange(150))
+#plot_support_dim(indices, iterations = 50, max_M = 15)
+    
 
