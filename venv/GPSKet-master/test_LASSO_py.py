@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 
 
 # Can be used to activate or deactivate a weighting of terms according to Psi^2 in the squared error loss function
-weight_according_to_amplitude_squared = False
+weight_according_to_amplitude_squared = True
 
 
 # -----------------Set Up (Hamiltonian, Hilbert Space, qGPS Model, Sampler, qGPS Variational Quantum State)-------------------------------
@@ -159,10 +159,10 @@ def yannic_linear_sweeping(iterations: int):
 
     m_sq_error_full_list = []
     for i in range(iterations):
-        for reference_site in np.arange(L):
+        for reference_site in range(ha.hilbert.size):
             learning.ref_sites = reference_site
             m_sq_error_full = lossfun(
-                learning.epsilon, jnp.arange(len(dataset_log_amplitudes))
+                learning.epsilon, jnp.arange(len(dataset_log_amplitudes)), vs
             )  # loss function of the learning objects current epsilon tensor against the exact state
             # (in this case the ground state of the J1_J2 hamiltonian), considering all indices (hence m_sq_error_FULL)
 
@@ -212,7 +212,7 @@ def test_iterations():
 
 
 # ----------------------------------------------------------------------------------------------------------------------------------------------
-def lasso_linear_sweeping(iterations: int, indices: list, alpha: float, vs, weighted_according_to_psi_squared=False,):
+def lasso_linear_sweeping(iterations: int, indices: list, alpha: float, vs, ha, weighted_according_to_psi_squared=False,):
     """Lasso linear sweeping model for qGPS model to the ground state computed at the top of this code"""
     epsilon = np.array(vs.parameters["epsilon"])  # reset the epsilon tensor
     learning = QGPSLogSpaceFit(
@@ -221,9 +221,11 @@ def lasso_linear_sweeping(iterations: int, indices: list, alpha: float, vs, weig
 
     m_sq_error_full_list = []
 
+    #Define LASSO Model
+    model = Lasso(alpha=alpha, fit_intercept=False) #alpha is the 'lambda' parameter, defines the L1 penalty the model uses. REGULARISATION
+
     for i in range(iterations):
-        #Define LASSO Model
-        model = Lasso(alpha=alpha, fit_intercept=False) #alpha is the 'lambda' parameter, defines the L1 penalty the model uses. REGULARISATION
+
         if i == 0:
             model.alpha = 0.0
         else:
@@ -243,8 +245,12 @@ def lasso_linear_sweeping(iterations: int, indices: list, alpha: float, vs, weig
             if weighted_according_to_psi_squared:
                 weightings = jnp.expand_dims(jnp.sqrt(abs(jnp.exp(dataset_log_amplitudes[indices]))**2), -1)
                 K=learning.set_kernel_mat(update_K=True, confs=dataset_configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
-                feature_vector = weightings.T.dot(K)
-                fit_data = weightings.T.dot((dataset_log_amplitudes[indices] - np.sum(prior_mean * feature_vector, axis=1)))
+                #shape K = (n_samples, MD)
+                feature_vector = weightings*K
+                fit_data = weightings.flatten()*((dataset_log_amplitudes[indices]))
+                fit_data -= jnp.mean(fit_data)  # Scale target fit_data to be centered around zero
+                fit_data = fit_data / jnp.std(fit_data)  # Constrain the variance of the target data set to be 1
+                fit_data -=weightings.flatten()*np.sum(prior_mean * feature_vector, axis=1)
             else:
                 K=learning.set_kernel_mat(update_K=True, confs=dataset_configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
                 feature_vector = K 
@@ -261,15 +267,14 @@ def lasso_linear_sweeping(iterations: int, indices: list, alpha: float, vs, weig
             learning.valid_kern = abs(np.diag(K.conj().T.dot(K))) > learning.kern_cutoff
 
             learning.update_epsilon_with_weights()
-
-        # Convert the partially learnt epsilon tensor into log wavefunction amplitudes reffered to by the sample indices.
-        sampled_log_amplitudes = vs._apply_fun({"params": {"epsilon": learning.epsilon}}, dataset_configs[indices])
+        # Convert the learnt epsilon tensor into log wavefunction amplitudes.
+        estimated_log_amplitudes = vs._apply_fun({"params": {"epsilon": learning.epsilon}}, dataset_configs)
 
         # Calculate Error
         m_sq_error_full = lossfun(learning.epsilon, indices, vs)
         m_sq_error_full_list.append(m_sq_error_full)
 
-    return sampled_log_amplitudes, m_sq_error_full_list
+    return estimated_log_amplitudes, m_sq_error_full_list
 
 #-------------------------------------------------------Testing Convergence v.s. Variational Parameters-----------------------------------------------------------
 
@@ -278,7 +283,7 @@ def regularization_strength(indices, iterations, max_regularization):
     error_list = []
     alpha_list = []
     for alpha in range(int(100*max_regularization+1)):
-        _, single_error_list = lasso_linear_sweeping(iterations = iterations,indices = indices, vs=vs, alpha=alpha/100)
+        _, single_error_list = lasso_linear_sweeping(iterations = iterations,indices = indices, vs=vs, ha = ha, alpha=alpha/100)
         alpha_list.append(alpha/1000)
         error_list.append(single_error_list[-1])
 
@@ -291,20 +296,19 @@ def regularization_strength(indices, iterations, max_regularization):
 
 
 
-"""_, error =lasso_linear_sweeping(iterations=10,indices = indices, alpha = 0.0)
-_, error1 =lasso_linear_sweeping(iterations=10,indices = indices, alpha = 0.0, weighted_according_to_psi_squared=True)
+#_, error =lasso_linear_sweeping(iterations=10,indices = indices, alpha = 0.0, vs =vs)
+#_, error1 =lasso_linear_sweeping(iterations=10,indices = indices, alpha = 0.0, vs = vs, weighted_according_to_psi_squared=True)
 
 
-print(error[-1])
-print(error1[-1])"""
-
+#print(error[-1])
+#print(error1[-1])
 
 def plot_support_dim(indices, iterations, max_M, min_M = 1):
     error_list = []
     M_list = [M for M in range(min_M, max_M+1)]
     for M in M_list:
         vs, _ = initialise_system(L=10, M=M)
-        _, error = lasso_linear_sweeping(iterations, indices, alpha = 0.01, vs=vs)
+        _, error = lasso_linear_sweeping(iterations, indices, alpha = 0.01, vs=vs, ha = ha)
         error_list.append(error[-1])
     
     #Plotting
@@ -319,5 +323,48 @@ def plot_support_dim(indices, iterations, max_M, min_M = 1):
 
 #indices = jnp.atleast_1d(jnp.arange(150))
 #plot_support_dim(indices, iterations = 50, max_M = 15)
+
+def overlap_error(iterations, indices, alpha, vs, ha, weighted_bool):
+    """Calculates the overlap of the """
+    exact_amps = dataset_amplitudes/jnp.linalg.norm(dataset_amplitudes)
+    estimated_log_amps, _ = lasso_linear_sweeping(iterations, indices, alpha, vs, ha, weighted_bool)
+    estimated_amps  = jnp.exp(estimated_log_amps)/jnp.linalg.norm(jnp.exp(estimated_log_amps))
+    overlap = estimated_amps.T.dot(exact_amps)
+    return overlap
+
+#print(overlap_error(iterations = 100, indices = jnp.atleast_1d(jnp.arange(252)), alpha = 0.1, vs =vs, weighted_bool = False))
+
+
+def get_cmap(n, name='hsv'):
+    '''Returns a function that maps each index in 0, 1, ..., n-1 to a distinct 
+    RGB color; the keyword argument name must be a standard mpl colormap name.'''
+    return plt.cm.get_cmap(name, n)
+
+def plot_overlap_varying_alpha(L, M, iters, min_alpha, max_alpha, step_size, indices_sets):
+    vs, ha = initialise_system(L,M)
+    cmap = get_cmap(len(indices_sets))
+    overlaps = []
+    min_alpha_ref = min_alpha
+    for i in range(len(indices_sets)):
+        min_alpha = min_alpha_ref
+        alpha = []
+        overlaps.append([])
+        while min_alpha < max_alpha:
+            alpha.append(min_alpha)
+            overlaps[i].append(jnp.abs(overlap_error(iterations = iters, indices = indices_sets[i],alpha = min_alpha, vs = vs, ha = ha, weighted_bool = False)))
+            min_alpha += step_size
+        plt.plot(alpha, overlaps[i], color = cmap(i), label = str(len(indices_sets[i])) +' Samples')
     
+    #Plotting
+    plt.title("<qGPS|gs> of LASSO Estimator with varied regularization parameter, alpha (M=" + str(M) + ", iters=" +str(iters) +")", fontsize = 10)
+    plt.xlabel("alpha")
+    plt.xticks(alpha)
+    plt.ylabel("Overlap, <qGPS|gs>")
+    plt.legend()
+    plt.show()
+
+plot_overlap_varying_alpha(L=10, M=6, iters = 10, min_alpha=0, max_alpha = 0.6, step_size= 0.05, indices_sets = [jnp.atleast_1d(jnp.arange(150)),jnp.atleast_1d(jnp.arange(175)),jnp.atleast_1d(jnp.arange(200))])
+
+
+#lasso_linear_sweeping(indices = jnp.atleast_1d(jnp.arange(50)), iterations = 10, alpha = 0.2, vs=vs, weighted_according_to_psi_squared=False)
 
