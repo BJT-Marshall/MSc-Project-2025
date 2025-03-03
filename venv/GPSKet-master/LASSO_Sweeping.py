@@ -32,7 +32,7 @@ def initialise_system(L,M):
     model = qGPS(hi, M, init_fun=GPSKet.nn.initializers.normal(1.0e-3), dtype=float)
 
     sa = nk.sampler.MetropolisExchange(hi, graph=ha.graph, n_chains_per_rank=1, d_max=L)
-    vs = nk.vqs.MCState(sa, model, n_samples=10*M*L, chunk_size=1, seed=1)
+    vs = nk.vqs.MCState(sa, model, n_samples=10*M*L, chunk_size=1, seed=2)
 
     return vs, ha
 
@@ -108,13 +108,15 @@ def lasso_linear_sweeping(iterations: int, indices: list, configs: list, amps:li
             #target data and feature vector both individually scaled by |psi|
             if weighted_according_to_psi_squared:
                 weightings = jnp.expand_dims(jnp.abs(amps), -1)
+                weightings = weightings/max(weightings)
+                
                 K=learning.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
                 
                 feature_vector = weightings[indices]*K
                 
                 temp_log_amps = log_amps
-                temp_log_amps = temp_log_amps/jnp.std(temp_log_amps)
-                temp_log_amps = temp_log_amps - jnp.mean(temp_log_amps)
+                #temp_log_amps = temp_log_amps/jnp.std(temp_log_amps)
+                #temp_log_amps = temp_log_amps - jnp.mean(temp_log_amps)
 
                 fit_data = weightings[indices].flatten()*(temp_log_amps[indices] - prior_mean*np.sum(feature_vector, axis=1))
             else:
@@ -138,15 +140,11 @@ def lasso_linear_sweeping(iterations: int, indices: list, configs: list, amps:li
         # Convert the learnt epsilon tensor into log wavefunction amplitudes.
         estimated_log_amps = vs._apply_fun({"params": {"epsilon": learning.epsilon}}, configs)
 
-        # Calculate Error DOING THIS IN THE LOOP IS TEMPORARY UNTIL I KNOW IT WORKS, THEN CAN JUST CALL LOSS FUNCTION ON THE OUTPUTED LOG AMPS
-        m_sq_error_full = lossfun(log_amps, configs, learning.epsilon, jnp.atleast_1d(jnp.arange(ha.hilbert.size)), vs, weighted_according_to_psi_squared)
-        m_sq_error_full_list.append(m_sq_error_full)
-
     return estimated_log_amps,m_sq_error_full_list
 
 def overlap_error(configs, amps, log_amps, iterations, indices_to_fit, alpha, vs, ha, weighted_bool):
     """Calculates the overlap of the """
-    estimated_log_amps, _ = lasso_linear_sweeping(iterations, indices_to_fit, configs, amps, log_amps, alpha, vs, ha, weighted_bool)
+    estimated_log_amps = lasso_linear_sweeping(iterations, indices_to_fit, configs, amps, log_amps, alpha, vs, ha, weighted_bool)
     estimated_amps  = jnp.exp(estimated_log_amps)/jnp.linalg.norm(jnp.exp(estimated_log_amps))
     overlap = abs(estimated_amps.T.dot(amps))
     return overlap
@@ -187,7 +185,7 @@ def generate_meeting_plots_25_02(L,M,alpha,iters,indices_sets,n_plots=1,extra_st
 
     return None
 
-def plot_overlaps(L,M,alpha,iters,indices_sets):
+def plot_overlaps(L,M,alpha,iters,indices_sets,weights):
     vs, ha = initialise_system(L,M)
     _, configs, amps, log_amps = generate_test_data(ha)
     overlaps = []
@@ -201,17 +199,17 @@ def plot_overlaps(L,M,alpha,iters,indices_sets):
         alpha = alpha, 
         vs = vs, 
         ha = ha, 
-        weighted_bool=True
+        weighted_bool=weights
         ))
     plt.plot(indices_sets, overlaps)
-    plt.title("<qGPS|gs> of LASSO Estimator vs. size of training set, (alpha=" + str(alpha) + ", iters=" +str(iters) +", M="+str(M)+", weights=False)", fontsize = 8)
+    plt.title("<qGPS|gs> of LASSO Estimator vs. size of training set, (alpha=" + str(alpha) + ", iters=" +str(iters) +", M="+str(M)+", weights="+str(weights)+")", fontsize = 8)
     plt.xlabel("Size of Training Data")
     plt.ylabel("Overlap, <qGPS|gs>")
-    plt.savefig("Overlaps: Step Size = 10, Weights = True.png")
+    plt.savefig("TEST: Overlaps: L="+str(L)+", Weights ="+str(weights)+".png")
 
-    return overlaps
+    return overlaps, len(ha.hilbert.all_states())
 
-def plot_errors(L,M,alpha,iters,indices_sets):
+"""def plot_errors(L,M,alpha,iters,indices_sets):
     vs, ha = initialise_system(L,M)
     _, configs, amps, log_amps = generate_test_data(ha)
     errors = []
@@ -224,64 +222,40 @@ def plot_errors(L,M,alpha,iters,indices_sets):
     plt.ylabel("LSE of log amplitudes")
     plt.savefig("Errors: Step Size = 10, Weights = True.png")
 
-    return errors
+    return errors"""
 
 #errors_1 = plot_errors(10,15,0.001,50,[160,170,180,190,200,210,220,230,240,252])
 #print(errors_1)
 #[100,110,120,130,140,150,160,170,180,190,200,210,220,230,240,252]
-#overlaps_1 = plot_overlaps(10,15,0.001,50,[100,110,120,130,140,150,160,170,180,190,200,210,220,230,240,252])
+#overlaps_1 = plot_overlaps(10,15,0.05,100,[200,210,220,230,240,252],True)
 #print(overlaps_1)
 
 
-#Smaller Tests:
+#Overlaps considering the full set of configurations for L in [2,4,6,8,10,12,14]
+"""overlaps_L = []
+L_list =[2,4,6,8,10,12,14]
+for i in L_list:
+    vs, ha = initialise_system(i,2*i)
+    _, configs, amps, log_amps = generate_test_data(ha)
+    overl = overlap_error(
+        configs=configs,
+        amps = amps, 
+        log_amps = log_amps, 
+        iterations = 100, 
+        indices_to_fit = jnp.atleast_1d(jnp.arange(len(ha.hilbert.all_states()))), 
+        alpha = 0.0, 
+        vs = vs, 
+        ha = ha, 
+        weighted_bool=True
+        )
+    overlaps_L.append(float(overl))
 
-"""vs, ha = initialise_system(L=10,M=15)
-
-e, configs, amps, log_amps = generate_test_data(ha)"""
-#print(log_amps)
-#print(jnp.linalg.norm(log_amps))
-
-"""estimated_log_amps, full_error_list = lasso_linear_sweeping(
-    iterations=50, 
-    indices = jnp.atleast_1d(jnp.arange(252)), 
-    configs=configs,
-    amps = amps, 
-    log_amps = log_amps,
-    alpha = 0.001,
-    vs=vs,
-    ha=ha,
-    weighted_according_to_psi_squared=True
-    )
-print(jnp.linalg.norm(log_amps))
-print(jnp.linalg.norm(estimated_log_amps))"""
-
-#print(full_error_list)
-#print(jnp.exp(estimated_log_amps))
-#print(jnp.linalg.norm(jnp.exp(estimated_log_amps)))
-
-"""overlap = overlap_error(
-    configs=configs,
-    amps = amps, 
-    log_amps = log_amps, 
-    iterations = 10, 
-    indices_to_fit = jnp.atleast_1d(jnp.arange(200)), 
-    alpha = 0.0, 
-    vs = vs, 
-    ha = ha, 
-    weighted_bool=False
-    )"""
-
-#print(overlap) 
-
-#a=0
-#0.9597 with weighted_bool = False
-#0.00048 with weighted_bool = True
-
-#a=0.0001
-
-#Keep testing the weighted_bool= False for now. Then fix the True later.
+plt.plot(L_list,overlaps_L)
+plt.title("Overlap vs L fitting on all amplitudes for respective L, M=2L, a=0, weights =True", fontsize = 10)
+plt.xlabel("L")
+plt.ylabel("Overlap, <qGPS|gs>")
+plt.savefig("Overlap vs L fitting on all amplitudes for respective L, M=2L, a=0, weights =True")"""
 
 
-#The Big Test:
 
-#generate_meeting_plots_25_02(L=10, M=10, alpha = 0, iters = 10, indices_sets= [100,120,140,160,180,200,220,240,252])
+
