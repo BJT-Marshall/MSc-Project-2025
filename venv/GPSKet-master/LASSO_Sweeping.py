@@ -105,26 +105,22 @@ def lasso_linear_sweeping(iterations: int, indices: list, configs: list, amps:li
 
             prior_mean = 1.0 if site != 0 else 0.0
 
-            #scaled by sqrt{|psi|^2}k
+            #target data and feature vector both individually scaled by |psi|
             if weighted_according_to_psi_squared:
                 weightings = jnp.expand_dims(jnp.abs(amps), -1)
                 K=learning.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
-                #shape K = (n_samples, MD)
+                
                 feature_vector = weightings[indices]*K
                 
-                #Re-adjusting the fit data (log_amps) to have a mean of zero and variance of one. Because LASSO likes it that way.
-                weighted_log_amps = weightings.flatten()*log_amps
-                weighted_log_amps -= jnp.mean(weighted_log_amps) # Scale target data to be centered around zero
-                weighted_log_amps = weighted_log_amps/jnp.std(weighted_log_amps)# Constrain the variance of the target data set to be 1
-                
-                """fit_data = weightings.flatten()*log_amps[indices]
-                fit_data -= jnp.mean(fit_data)  # Scale target fit data to be centered around zero
-                fit_data = fit_data / jnp.std(fit_data)  # Constrain the variance of the target data set to be 1"""
-                fit_data = weighted_log_amps[indices]- weightings[indices].flatten()*np.sum(prior_mean * feature_vector, axis=1)
+                temp_log_amps = log_amps
+                temp_log_amps = temp_log_amps/jnp.std(temp_log_amps)
+                temp_log_amps = temp_log_amps - jnp.mean(temp_log_amps)
+
+                fit_data = weightings[indices].flatten()*(temp_log_amps[indices] - prior_mean*np.sum(feature_vector, axis=1))
             else:
                 K=learning.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
                 feature_vector = K
-                fit_data = log_amps[indices] - prior_mean* np.sum(feature_vector, axis=1) #0.99
+                fit_data = log_amps[indices] - prior_mean* np.sum(feature_vector, axis=1)
                 
 
             #Fitting the model (Computes the optimal weights 'w' that fits the feature vector 'K' to the fit data)
@@ -205,13 +201,13 @@ def plot_overlaps(L,M,alpha,iters,indices_sets):
         alpha = alpha, 
         vs = vs, 
         ha = ha, 
-        weighted_bool=False
+        weighted_bool=True
         ))
     plt.plot(indices_sets, overlaps)
     plt.title("<qGPS|gs> of LASSO Estimator vs. size of training set, (alpha=" + str(alpha) + ", iters=" +str(iters) +", M="+str(M)+", weights=False)", fontsize = 8)
     plt.xlabel("Size of Training Data")
     plt.ylabel("Overlap, <qGPS|gs>")
-    plt.savefig("Overlaps: Step Size = 10, Weights = False.png")
+    plt.savefig("Overlaps: Step Size = 10, Weights = True.png")
 
     return overlaps
 
@@ -220,42 +216,44 @@ def plot_errors(L,M,alpha,iters,indices_sets):
     _, configs, amps, log_amps = generate_test_data(ha)
     errors = []
     for set in indices_sets:
-        _, errors_full = lasso_linear_sweeping(iterations = iters, indices = jnp.atleast_1d(jnp.arange(set)), configs = configs, amps = amps, log_amps = log_amps, alpha = 0.001, vs = vs, ha = ha, weighted_according_to_psi_squared = False)
+        _, errors_full = lasso_linear_sweeping(iterations = iters, indices = jnp.atleast_1d(jnp.arange(set)), configs = configs, amps = amps, log_amps = log_amps, alpha = 0.001, vs = vs, ha = ha, weighted_according_to_psi_squared = True)
         errors.append(errors_full[-1])
     plt.plot(indices_sets, errors)
     plt.title("LSE of LASSO Estimator vs. size of training set, (alpha=" + str(alpha) + ", iters=" +str(iters) +", M="+str(M)+", weights=False)", fontsize = 8)
     plt.xlabel("Size of Training Data")
     plt.ylabel("LSE of log amplitudes")
-    plt.savefig("Errors: Step Size = 10, Weights = False.png")
+    plt.savefig("Errors: Step Size = 10, Weights = True.png")
 
     return errors
 
 #errors_1 = plot_errors(10,15,0.001,50,[160,170,180,190,200,210,220,230,240,252])
 #print(errors_1)
-
-#overlaps_1 = plot_overlaps(10,15,0.001,50,[100,120,140,160,180,200,220,240,252])
+#[100,110,120,130,140,150,160,170,180,190,200,210,220,230,240,252]
+#overlaps_1 = plot_overlaps(10,15,0.001,50,[100,110,120,130,140,150,160,170,180,190,200,210,220,230,240,252])
 #print(overlaps_1)
 
 
 #Smaller Tests:
 
-"""vs, ha = initialise_system(L=10,M=10)
+"""vs, ha = initialise_system(L=10,M=15)
 
 e, configs, amps, log_amps = generate_test_data(ha)"""
 #print(log_amps)
 #print(jnp.linalg.norm(log_amps))
 
 """estimated_log_amps, full_error_list = lasso_linear_sweeping(
-    iterations=10, 
+    iterations=50, 
     indices = jnp.atleast_1d(jnp.arange(252)), 
     configs=configs,
     amps = amps, 
     log_amps = log_amps,
-    alpha = 0.0002,
+    alpha = 0.001,
     vs=vs,
     ha=ha,
-    weighted_according_to_psi_squared=False
-    )"""
+    weighted_according_to_psi_squared=True
+    )
+print(jnp.linalg.norm(log_amps))
+print(jnp.linalg.norm(estimated_log_amps))"""
 
 #print(full_error_list)
 #print(jnp.exp(estimated_log_amps))
