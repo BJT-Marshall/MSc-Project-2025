@@ -87,7 +87,7 @@ def lasso_linear_sweeping(tol: float, iterations: int, indices: list, configs: l
     #Define a LASSO Learning model for each site.
     lasso_models = []
     for s in np.arange(ha.hilbert.size):
-        temp_model = Lasso(alpha=alpha, fit_intercept=False, warm_start=False, tol = tol)
+        temp_model = Lasso(alpha=alpha, fit_intercept=False, warm_start=True, tol = tol)
         lasso_models.append(temp_model)
     
 
@@ -102,9 +102,14 @@ def lasso_linear_sweeping(tol: float, iterations: int, indices: list, configs: l
             current_alpha = 0.0
         else:
           current_alpha = float((1-jnp.exp(-i/iterations))*alpha)
-        
+          #current_alpha=alpha*10**8
         for site in np.arange(ha.hilbert.size):  # For each single site perform an optimisation cycle
             
+            """if i==0 and site == 0:
+                current_alpha=current_alpha
+            else:
+                current_alpha = float(jnp.sqrt(jnp.mean(jnp.abs(feature_vector.flatten())))*current_alpha)"""
+
             learning.reset()
             
             learning.ref_sites = site
@@ -126,7 +131,10 @@ def lasso_linear_sweeping(tol: float, iterations: int, indices: list, configs: l
                 feature_vector = weightings[indices]*K
                 temp_log_amps = log_amps
 
-                fit_data = weightings[indices].flatten()*(temp_log_amps[indices] - prior_mean*np.sum(feature_vector, axis=1))
+                fit_data = weightings[indices].flatten()*(temp_log_amps[indices]) 
+                fit_data -=jnp.mean(fit_data)
+                fit_data -= (prior_mean*np.sum(feature_vector, axis=1))
+                #print(jnp.mean(fit_data))
             else:
                 K=learning.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
                 feature_vector = K
@@ -135,9 +143,13 @@ def lasso_linear_sweeping(tol: float, iterations: int, indices: list, configs: l
 
             #Fitting the model (Computes the optimal weights 'w' that fits the feature vector 'K' to the fit data)
             optimal_weights = model.fit(X=feature_vector, y=fit_data).coef_
+            print(optimal_weights)
 
             #revert the prior mean adjustment above
             learning.weights = optimal_weights + prior_mean
+            
+            #print(feature_vector.flatten())
+            #print(learning.weights)
 
             
             #print(learning.weights)
@@ -158,13 +170,16 @@ def lasso_linear_sweeping(tol: float, iterations: int, indices: list, configs: l
             #-------------------------------------------------------------
             overlap_temp = abs(estimated_amps.T.dot(norm_amps)) 
             overlap_after_site.append(overlap_temp)
-            #print(overlap_temp)
+            print(overlap_temp)
             #input()
-        #overlaps_iter.append(overlap_temp)
+        overlaps_iter.append(overlap_temp)
+        print()
+        #print(overlap_temp)
+        #input()
     
-    with open('L-Models-Overlaps-Seed'+str(tempSeed)+'PerSite.txt', 'w') as f:
-      for value in overlap_after_site:
-        f.write(f"{value}\n")
+    with open('M15a0.1.txt', 'w') as f:
+        for value in overlaps_iter:
+            f.write(f"{value}\n")
     
     #iters_list = [x for x in range(iterations)]
     #plt.plot(iters_list, overlaps_iter)
@@ -262,7 +277,7 @@ def calibrate_alpha(L,M,iters,weights):
 
 #Varying M test
 
-data = []
+"""data = []
 #M_list = [10,12,14,16,18,20,22,24,26,28,30]
 #M_list = [-10,-9,-8,-7,-6,-5,-4,-3,-2,-1]
 M_list = [-9]
@@ -275,7 +290,7 @@ for m_i in M_list:
   for i in [1,11]:
     counter = 0
     counter0 = 0
-    vs, ha = initialise_system(L=10, M = 10, seed = i)
+    vs, ha = initialise_system(L=10, M = 20, seed = i)
     estimated_log_amps, epsilon = lasso_linear_sweeping(
       10**(-4),
       200,
@@ -303,9 +318,42 @@ for m_i in M_list:
   #data.append(int(jnp.mean(jnp.array(counters))))
   #data.append(int(jnp.mean(jnp.array(counters0))))
 
-print(overlaps)
+#print(overlaps)
 #print(epsilon)
-#print(data)
+#print(data)"""
 """with open('O(a)M10L10A150R.txt', 'w') as f:
     for set in data:
         f.write(f"{set}\n")"""
+
+
+vs_,ha_ = initialise_system(L=10,M=18, seed = 1)
+_, configs, amps, log_amps = generate_test_data(ha_)
+fracs = []
+for i in [0.1,0.2,0.3,0.4,0.5]:
+    vs, ha = initialise_system(L=10, M = 15, seed = 8)
+    estimated_log_amps, epsilon = lasso_linear_sweeping(
+      10**(-4),
+      200,
+      jnp.atleast_1d(jnp.arange(len(ha.hilbert.all_states()))),  #len(ha.hilbert.all_states())
+      configs,
+      amps, 
+      log_amps, 
+      i,
+      vs, 
+      ha, 
+      True,
+      i
+      )
+    #print(epsilon)
+    counter1=0
+    counter0=0
+    for element in epsilon.flatten():
+        if element==1:
+            counter1 +=1
+        elif element==0:
+            counter0+=1
+    frac_pruned = (int(counter1+counter0))/int(len(epsilon.flatten()))
+    #print(int(len(epsilon.flatten())),int(counter1),int(counter0),frac_pruned)
+    fracs.append(frac_pruned)
+    print(fracs)
+        
