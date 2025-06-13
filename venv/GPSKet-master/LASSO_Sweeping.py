@@ -183,7 +183,20 @@ def lasso_linear_sweeping(iterations: int, indices: list, configs: list, amps:li
 
 
 def fit_polynomial(x, alpha_set: list, metric_set: list):
-    """Docstring"""
+    """
+    Interpolates a 2nd or 3rd degree polynomial fit from the data points (alpha_i, metric(alpha_i)) 
+    for alpha_i in alpha_set and metric(alpha_i) in metric_set. Evaluates this polynomial for input x and returns the result.
+    The choice of 2nd or 3rd degree polynomial is made to guarentee a minimum exists for x in the range [0, inf).
+
+    Inputs:
+        x: (float) A positive float, passed into the interpolated polynomial to be evaluated.
+        alpha_set: (list) A list of x-coordinates used for interpolation of a 2nd or 3rd degree polynomial.
+        metric_set: (list) A list of y-coordinates used for interpolation of a 2nd or 3rd degree polynomial.
+    
+    Returns:
+        poly_x: (float) The value of the interpolated polynomial, evaluated at input x.
+    
+    """
     alpha_array = jnp.array(alpha_set)
     metric_array = jnp.array(alpha_array)
 
@@ -207,7 +220,19 @@ def fit_polynomial(x, alpha_set: list, metric_set: list):
 
 
 def adjust_regularization(alpha_set: list, metric_set: list):
-    """Docstring"""
+    """
+    Computes the location of the minimum of the polynomial interpolated from the data points (alpha_i, metric(alpha_i)) 
+    for alpha_i in alpha_set and metric(alpha_i) in metric_set. Restricted to only return positive valued results.
+    If the computed minimum is identically zero, returns the difference alpha_set[-1] - alpha_set[-2], 
+    or "increment" in the context of the LASSO linear sweeping algorithm.
+
+    Inputs:
+        alpha_set: (list) A list of x-coordinates used for interpolation of a 2nd or 3rd degree polynomial.
+        metric_set: (list) A list of y-coordinates used for interpolation of a 2nd or 3rd degree polynomial.
+
+    Outputs:
+        new_alpha: (float) Minimum of the interpolated polynomial, subject to the constraint new_alpha>0.
+    """
     #Find the minimum of the interpolated polynomial.
     min_alpha = spy.optimize.minimize(fun = fit_polynomial, x0 = alpha_set[1], args = (alpha_set, metric_set), method='L-BFGS-B', bounds = ((0,10),))
     new_alpha = min(min_alpha.x)
