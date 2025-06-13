@@ -1,5 +1,6 @@
 import numpy as np
 import netket as nk
+import scipy as spy
 
 import GPSKet
 
@@ -99,96 +100,111 @@ def lasso_linear_sweeping(iterations: int, indices: list, configs: list, amps:li
 
     #Fitting Loop
     for i in range(iterations):
-        for site in np.arange(epsilon.shape[-1]):
-
-            learning.reset()
-            
-            learning.ref_sites = site
-            
-            if n_models:
-                model = lasso_models[site]
-            else:
-                model = lasso_models    
-            
-            #Guarenteeing a regularization of zero for the first iteration
-            if i==0:
-                model.alpha = 0 
-                increment = 0.01
-            else:
-                increment = 0.1*model.get_params()["alpha"]*jnp.exp(-i/iterations) #scales with current alpha and also decreases with iterations to converge
-           
-            #model.alpha = float((1-jnp.exp(-i/iterations))*alpha)
-            
-            prior_mean = 1.0 if site != 0 else 0.0
-
-            #if flag: target data and feature vector both individually scaled by |psi|_predicted at each iteration
-            if scaling:
-
-                log_scalings = estimated_log_amps/jnp.linalg.norm(estimated_log_amps)
-                scalings = jnp.expand_dims(jnp.exp(log_scalings), -1)
-                
-                K=learning.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
-                feature_vector = scalings[indices]*K
-
-                fit_data = scalings[indices].flatten()*(log_amps[indices]) -(prior_mean*np.sum(feature_vector, axis=1))
-                fit_data -=jnp.mean(fit_data)
-            
-            else:
-                K=learning.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
-                feature_vector = K
-                fit_data = log_amps[indices] - prior_mean* np.sum(feature_vector, axis=1)
-                
-
-            #Fitting the model (Computes the optimal weights 'w' that fits the feature vector to the fit data)
-            optimal_weights = model.fit(X=feature_vector, y=fit_data).coef_
-
-            #revert the prior mean adjustment above
-            learning.weights = optimal_weights + prior_mean
-
-            #Update the weights and the epsilon tensor held in the learning object.
-            learning.valid_kern = abs(np.diag(K.conj().T.dot(K))) > learning.kern_cutoff
-            learning.update_epsilon_with_weights()
         
-            #Convert the learnt qGPS model into log wavefunction amplitudes.
-    
-            estimated_log_amps = vs._apply_fun({"params": {"epsilon": learning.epsilon}}, configs)
+        #Guarenteeing a regularization of zero for the first iteration. 
+        #Defining the regularization increment for each iteration.
+        if i==0:
+            current_alpha = 0 
+            increment = 0.01
+        else:
+            current_alpha = model.get_params()["alpha"]
+            increment = 0.1*current_alpha*jnp.exp(-i/iterations) #scales with current alpha and also decreases with iterations to converge
+            #increment = 0.1*current_alpha
+        #Defining the alphas to test and reseting the metric set for this iteration
+        
 
-            #Compute metric to automise the regularization strength 
-            model.alpha = adjust_regularization(model.get_params()["alpha"], increment) #Using the getter method of the LASSO estimator to pass the current alpha into the function
-            print(model.alpha)
-            input()
-            #THREE ELEMENT CHECK
+        if current_alpha - increment >0:
+            low_alpha = current_alpha-increment
+        else:
+            low_alpha = 0
+        alpha_set = [low_alpha, current_alpha, current_alpha+increment]
+        metric_set = []
+
+        #Running the sweeping for each different alpha to calibrate regularization
+        for alpha in alpha_set:
+            for site in np.arange(epsilon.shape[-1]):
+
+                learning.reset()
+                
+                learning.ref_sites = site
+                
+                if n_models:
+                    model = lasso_models[site]
+                else:
+                    model = lasso_models    
+                
+                model.alpha = current_alpha
+                #model.alpha = float((1-jnp.exp(-i/iterations))*alpha)
+                
+                prior_mean = 1.0 if site != 0 else 0.0
+
+                #if flag: target data and feature vector both individually scaled by |psi|_predicted at each iteration
+                if scaling:
+
+                    log_scalings = estimated_log_amps/jnp.linalg.norm(estimated_log_amps)
+                    scalings = jnp.expand_dims(jnp.exp(log_scalings), -1)
+                    
+                    K=learning.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
+                    feature_vector = scalings[indices]*K
+
+                    fit_data = scalings[indices].flatten()*(log_amps[indices]) -(prior_mean*np.sum(feature_vector, axis=1))
+                    fit_data -=jnp.mean(fit_data)
+                
+                else:
+                    K=learning.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
+                    feature_vector = K
+                    fit_data = log_amps[indices] - prior_mean* np.sum(feature_vector, axis=1)
+                    
+
+                #Fitting the model (Computes the optimal weights 'w' that fits the feature vector to the fit data)
+                optimal_weights = model.fit(X=feature_vector, y=fit_data).coef_
+
+                #revert the prior mean adjustment above
+                learning.weights = optimal_weights + prior_mean
+
+                #Update the weights and the epsilon tensor held in the learning object.
+                learning.valid_kern = abs(np.diag(K.conj().T.dot(K))) > learning.kern_cutoff
+                learning.update_epsilon_with_weights()
             
+                #Convert the learnt qGPS model into log wavefunction amplitudes.
+        
+                estimated_log_amps = vs._apply_fun({"params": {"epsilon": learning.epsilon}}, configs)
 
+            metric_set.append(-1*float(overlap(estimated_log_amps, log_amps))) #Overlap requires -1 factor so minimum corresponds to best fit (TEMP)
+            #metric_set.append(temp_metric(estimated_log_amps, log_amps)) FOr use with a smarter metric
             
-    return estimated_log_amps, log_amps
+        #Compute metric to automise the regularization strength 
+        model.alpha = adjust_regularization(alpha_set, metric_set) 
+        print(model.alpha)
+        input()
+        #THREE ELEMENT CHECK
+            
+    return estimated_log_amps
 
 
-def adjust_regularization(current_alpha: float, increment: float):
-    if current_alpha - increment >0:
-        low_alpha = current_alpha-increment
-    else:
-        low_alpha = 0
-    alpha_set = [low_alpha, current_alpha, current_alpha+increment]
-    metric_set = [overlap(alpha_prime) for alpha_prime in alpha_set] #inpuot metric set
+def adjust_regularization(alpha_set: list, metric_set: list):
+
+    alpha_array = jnp.array(alpha_set)
+    metric_array = jnp.array(alpha_array)
 
     #Fit a polynomial to the pairs (alpha_i, metric(alpha_i))
     if metric_set[1] == max(metric_set):    
         if metric_set[0] == metric_set[1]:
-            poly_coefs = jnp.polyfit(alpha_set, metric_set, 2)
+            poly_coefs = jnp.polyfit(alpha_array, metric_array, 2)
         else:
-            poly_coefs = jnp.polyfit(alpha_set, metric_set, 3)
+            poly_coefs = jnp.polyfit(alpha_array, metric_array, 3)
     else:
-        poly_coefs = jnp.ployfit(alpha_set, metric_set, 2)
-            
+        poly_coefs = jnp.polyfit(alpha_array, metric_array, 2)
+
     #Compute the roots of the derivative of the polynomial
     poly_derivative = jnp.polyder(poly_coefs, 1)
+    print(poly_derivative)
     if min(jnp.roots(poly_derivative))>=0:
         new_alpha = min(jnp.roots(poly_derivative))
     else:
-        new_alpha = alpha_set[metric_set.index(min(metric_set))]
+        new_alpha = alpha_set[metric_set.index(min(metric_set))] 
     if new_alpha ==0:
-        new_alpha = increment
+        new_alpha = alpha_set[2] - alpha_set[1] #The increment change
 
     #Return the alpha corresponding to the minimum metric from the interpolated polynomial
     return float(new_alpha)
