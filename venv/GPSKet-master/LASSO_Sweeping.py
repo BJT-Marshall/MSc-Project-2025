@@ -110,7 +110,14 @@ def lasso_linear_sweeping(iterations: int, indices: list, configs: list, amps:li
             else:
                 model = lasso_models    
             
-            model.alpha = float((1-jnp.exp(-i/iterations))*alpha)
+            #Guarenteeing a regularization of zero for the first iteration
+            if i==0:
+                model.alpha = 0 
+                increment = 0.01
+            else:
+                increment = 0.1*model.get_params()["alpha"]*jnp.exp(-i/iterations) #scales with current alpha and also decreases with iterations to converge
+           
+            #model.alpha = float((1-jnp.exp(-i/iterations))*alpha)
             
             prior_mean = 1.0 if site != 0 else 0.0
 
@@ -145,9 +152,46 @@ def lasso_linear_sweeping(iterations: int, indices: list, configs: list, amps:li
             #Convert the learnt qGPS model into log wavefunction amplitudes.
     
             estimated_log_amps = vs._apply_fun({"params": {"epsilon": learning.epsilon}}, configs)
-            
-    return estimated_log_amps
 
+            #Compute metric to automise the regularization strength 
+            model.alpha = adjust_regularization(model.get_params()["alpha"], increment) #Using the getter method of the LASSO estimator to pass the current alpha into the function
+            print(model.alpha)
+            input()
+            #THREE ELEMENT CHECK
+            
+
+            
+    return estimated_log_amps, log_amps
+
+
+def adjust_regularization(current_alpha: float, increment: float):
+    if current_alpha - increment >0:
+        low_alpha = current_alpha-increment
+    else:
+        low_alpha = 0
+    alpha_set = [low_alpha, current_alpha, current_alpha+increment]
+    metric_set = [overlap(alpha_prime) for alpha_prime in alpha_set] #inpuot metric set
+
+    #Fit a polynomial to the pairs (alpha_i, metric(alpha_i))
+    if metric_set[1] == max(metric_set):    
+        if metric_set[0] == metric_set[1]:
+            poly_coefs = jnp.polyfit(alpha_set, metric_set, 2)
+        else:
+            poly_coefs = jnp.polyfit(alpha_set, metric_set, 3)
+    else:
+        poly_coefs = jnp.ployfit(alpha_set, metric_set, 2)
+            
+    #Compute the roots of the derivative of the polynomial
+    poly_derivative = jnp.polyder(poly_coefs, 1)
+    if min(jnp.roots(poly_derivative))>=0:
+        new_alpha = min(jnp.roots(poly_derivative))
+    else:
+        new_alpha = alpha_set[metric_set.index(min(metric_set))]
+    if new_alpha ==0:
+        new_alpha = increment
+
+    #Return the alpha corresponding to the minimum metric from the interpolated polynomial
+    return float(new_alpha)
 
 def overlap(log_amps_1, log_amps_2):
     """
@@ -174,6 +218,21 @@ def overlap(log_amps_1, log_amps_2):
     return abs(amps_1.T.dot(amps_2))  
 
 
+def temp_metric():
+    """Must be at a minimum for the best fir"""
+    return 1
 
 
-
+vs, ha = initialise_system(L=14, M = 12, seed = 1)
+_, configs, amps, log_amps = generate_test_data(ha)
+estimated_log_amps, o = lasso_linear_sweeping(
+    50,
+    jnp.atleast_1d([randint(0,len(ha.hilbert.all_states())) for x in range(0,int(0.3*len(ha.hilbert.all_states())))]), #jnp.atleast_1d(jnp.arange(180)),  #len(ha.hilbert.all_states())
+    configs,
+    amps, 
+    log_amps, 
+    3*10**-3,
+    vs, 
+    True,
+    False
+    )
