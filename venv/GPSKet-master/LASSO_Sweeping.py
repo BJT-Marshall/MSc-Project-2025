@@ -176,14 +176,14 @@ def lasso_linear_sweeping(iterations: int, indices: list, configs: list, amps:li
         #Compute metric to automise the regularization strength 
         model.alpha = adjust_regularization(alpha_set, metric_set) 
         print(model.alpha)
+        print(overlap(estimated_log_amps, log_amps))
         input()
-        #THREE ELEMENT CHECK
             
     return estimated_log_amps
 
 
-def adjust_regularization(alpha_set: list, metric_set: list):
-
+def fit_polynomial(x, alpha_set: list, metric_set: list):
+    """Docstring"""
     alpha_array = jnp.array(alpha_set)
     metric_array = jnp.array(alpha_array)
 
@@ -195,14 +195,24 @@ def adjust_regularization(alpha_set: list, metric_set: list):
             poly_coefs = jnp.polyfit(alpha_array, metric_array, 3)
     else:
         poly_coefs = jnp.polyfit(alpha_array, metric_array, 2)
+    
+    #Compute the polynomial for value "x".
+    poly_x = 0
+    for c in range(1,len(poly_coefs)+1):
+        poly_x += poly_coefs[-c]*(x**(c-1))
 
-    #Compute the roots of the derivative of the polynomial
-    poly_derivative = jnp.polyder(poly_coefs, 1)
-    print(poly_derivative)
-    if min(jnp.roots(poly_derivative))>=0:
-        new_alpha = min(jnp.roots(poly_derivative))
-    else:
-        new_alpha = alpha_set[metric_set.index(min(metric_set))] 
+    #Return the polynomial value, metric(alpha), at value alpha = x for use in finding the optimal alpha to update the model.
+    return poly_x
+
+
+
+def adjust_regularization(alpha_set: list, metric_set: list):
+    """Docstring"""
+    #Find the minimum of the interpolated polynomial.
+    min_alpha = spy.optimize.minimize(fun = fit_polynomial, x0 = alpha_set[1], args = (alpha_set, metric_set), method='L-BFGS-B', bounds = ((0,10),))
+    new_alpha = min(min_alpha.x)
+
+    #If the minimum corresponds to zero regularization, choose to increase it by the increment anyway.
     if new_alpha ==0:
         new_alpha = alpha_set[2] - alpha_set[1] #The increment change
 
@@ -235,7 +245,7 @@ def overlap(log_amps_1, log_amps_2):
 
 
 def temp_metric():
-    """Must be at a minimum for the best fir"""
+    """Must be at a minimum for the best fit"""
     return 1
 
 
