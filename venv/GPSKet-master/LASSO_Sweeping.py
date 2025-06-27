@@ -28,9 +28,6 @@ from random import randint
 from random import sample
 
 
-import plotly.express as px
-
-
 def initialise_test_system(L,M,seed):
     """Initialises the system Hamiltonian and generates a variational quantum state using the qGPS model."""
     ha = j1j2.get_J1_J2_Hamiltonian(Lx=L, J2=0.0, sign_rule=True, on_the_fly_en=True)
@@ -212,7 +209,7 @@ def lasso_linear_sweeping(iterations: int, indices: list, hamiltonian, vs_R, vs_
         
         
             
-    return estimated_log_amps, overlaps
+    return estimated_log_amps, overlaps, vs_R, vs_I
 
 
 def n_features_removed(epsilon_tensor):
@@ -315,11 +312,21 @@ def overlap(log_amps_1, log_amps_2):
             
     #Computes the overlap of wavefunction data provided.
     
-    return abs(jnp.conjugate(amps_1).T.dot(amps_2))  
+    return abs(jnp.conjugate(amps_1).T.dot(amps_2)) 
+
+def reformat_epsilon(epsilon):
+    epsilon_ = []
+    for m in range(epsilon.shape[-2]):
+        temp_epsilon = []
+        for d in range(2):
+            temp_epsilon.append([epsilon[d][m][l] for l in range(epsilon.shape[-1])])
+        epsilon_.append(temp_epsilon)
+
+    return epsilon_ 
 
 
 vs_R, vs_I, ha = initialise_test_system(L=6, M = 8, seed = 1)
-estimated_log_amps, o = lasso_linear_sweeping(
+estimated_log_amps, o, vs_R, vs_I = lasso_linear_sweeping(
     50,
     int(0.8*len(ha.hilbert.all_states())),
     ha,
@@ -328,5 +335,3 @@ estimated_log_amps, o = lasso_linear_sweeping(
     True,
     False,
     )
-
-print(o)
