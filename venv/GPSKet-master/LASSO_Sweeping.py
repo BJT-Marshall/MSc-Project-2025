@@ -324,6 +324,20 @@ def reformat_epsilon(epsilon):
 
     return epsilon_ 
 
+def export_epsilon(epsilon, title):
+    """
+    Exported epsilon has first line (M,D,L), then all entries of the epsilon tensor. 
+    When reading from file, read the first line and set up loops to read data back out into the correct lists
+    """
+    epsilon_ref = reformat_epsilon(epsilon)
+    shape_data = epsilon_ref.shape
+    with open(str(title)+'.txt', 'w') as f:
+        f.write(f"{shape_data}\n")
+        for element in epsilon_ref.flatten():
+            f.write(f"{element}\n")
+
+    return None
+
 
 vs_R, vs_I, ha = initialise_test_system(L=6, M = 8, seed = 1)
 estimated_log_amps, o, vs_R, vs_I = lasso_linear_sweeping(
@@ -335,3 +349,4 @@ estimated_log_amps, o, vs_R, vs_I = lasso_linear_sweeping(
     True,
     False,
     )
+
