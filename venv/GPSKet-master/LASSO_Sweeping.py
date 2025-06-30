@@ -20,6 +20,7 @@ import GPSKet.operator.hamiltonian.J1J2 as j1j2
 import sklearn
 from sklearn.linear_model import LassoCV
 from sklearn.linear_model import Lasso
+from sklearn.linear_model import LinearRegression
 
 import matplotlib.pyplot as plt
 
@@ -28,17 +29,19 @@ from random import randint
 from random import sample
 
 
-def initialise_test_system(L,M,seed):
+def initialise_test_system(L,M,seed,j2):
     """Initialises the system Hamiltonian and generates a variational quantum state using the qGPS model."""
-    ha = j1j2.get_J1_J2_Hamiltonian(Lx=L, J2=0.0, sign_rule=True, on_the_fly_en=True)
+    ha = j1j2.get_J1_J2_Hamiltonian(Lx=L, J2=j2, sign_rule=[True,False], on_the_fly_en=True)
     hi = ha.hilbert
 
     model_R = qGPS(hi, M, init_fun=GPSKet.nn.initializers.normal(1.0e-3), dtype=float)
     model_I = qGPS(hi, M, init_fun=GPSKet.nn.initializers.normal(1.0e-3), dtype=float)
 
-    sa = nk.sampler.MetropolisExchange(hi, graph=ha.graph, n_chains_per_rank=1, d_max=L)
-    vs_R = nk.vqs.MCState(sa, model_R, n_samples=500, chunk_size=1, seed=seed)
-    vs_I = nk.vqs.MCState(sa, model_I, n_samples=500, chunk_size=1, seed=seed)
+    sa_R = nk.sampler.MetropolisExchange(hi, graph=ha.graph, n_chains_per_rank=1, d_max=L)
+    sa_I = nk.sampler.MetropolisExchange(hi, graph=ha.graph, n_chains_per_rank=1, d_max=L)
+
+    vs_R = nk.vqs.MCState(sa_R, model_R, n_samples=5000, chunk_size=1, seed=seed)
+    vs_I = nk.vqs.MCState(sa_I, model_I, n_samples=5000, chunk_size=1, seed=seed)
 
     return vs_R, vs_I, ha
 
@@ -95,22 +98,23 @@ def lasso_linear_sweeping(iterations: int, indices: list, hamiltonian, vs_R, vs_
     
     #Initial set of estimated log wavefunction amplitudes to be used for initial scaling
     estimated_log_amps_R = vs_R._apply_fun({"params": {"epsilon": learning_R.epsilon}}, configs)
-    
+
     #Define a LASSO Learning model for each site.
     if n_models:
         lasso_models_R = []
         lasso_models_I = []
         for s in np.arange(epsilon_R.shape[-1]):
             lasso_models_R.append(LassoCV(eps=0.001, fit_intercept=False, cv=3, max_iter=5000))
-            lasso_models_I.append(LassoCV(eps=0.001, fit_intercept=False, cv=3, max_iter=5000))
+            lasso_models_I.append(LinearRegression(fit_intercept=False))
+    
     else:
         lasso_models_R = LassoCV(eps=0.001, fit_intercept=False, cv=3, max_iter=5000)
-        lasso_models_I = LassoCV(eps=0.001, fit_intercept=False, cv=3, max_iter=5000)
+        lasso_models_I = LinearRegression(fit_intercept=False)
 
     #Testing
     overlaps = []
-    alphas = []
-    features = []
+    overlaps_R = []
+    overlaps_I = []
 
     if type(indices) == int:
         indices = jnp.array(sample([x for x in range(len(ha.hilbert.all_states()))], indices))
@@ -138,7 +142,6 @@ def lasso_linear_sweeping(iterations: int, indices: list, hamiltonian, vs_R, vs_
                 model_I = lasso_models_I    
                 
                 
-                
             prior_mean = 1.0 if site != 0 else 0.0
 
             #if flag: target data and feature vector both individually scaled by |psi|_predicted at each iteration
@@ -148,18 +151,26 @@ def lasso_linear_sweeping(iterations: int, indices: list, hamiltonian, vs_R, vs_
                     log_scalings = estimated_log_amps_R/jnp.linalg.norm(estimated_log_amps_R)
                 else:
                     log_scalings = estimated_log_amps_R
-                scalings = jnp.expand_dims(jnp.exp(log_scalings), -1)
+                scalings = jnp.expand_dims(jnp.exp(log_scalings)/jnp.max(jnp.exp(log_scalings)), -1)
                     
                 K_R=learning_R.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
-                K_I=learning_I.set_kernel_mat(update_K=True, confs=configs[indices])
                 feature_vector_R = scalings[indices]*K_R
-                feature_vector_I = scalings[indices]*K_I
 
-                fit_data_R = scalings[indices].flatten()*(log_amps_R[indices]) -(prior_mean*np.sum(feature_vector_R, axis=1))
-                fit_data_I = scalings[indices].flatten()*(log_amps_I[indices]) -(prior_mean*np.sum(feature_vector_I, axis=1))
+                fit_data_R = scalings[indices].flatten()*(log_amps_R[indices])-(prior_mean*np.sum(feature_vector_R, axis=1))
                 fit_data_R -=jnp.mean(fit_data_R)
-                fit_data_I -=jnp.mean(fit_data_I)
-                
+
+                #K_I=learning_I.set_kernel_mat(update_K=True, confs=configs[indices])
+                #feature_vector_I = scalings[indices]*K_I
+                #fit_data_I = scalings[indices].flatten()*(log_amps_I[indices]) -(prior_mean*np.sum(feature_vector_I, axis=1))
+                #fit_data_I -=jnp.mean(fit_data_I)
+
+                #TEST
+                K_I=learning_I.set_kernel_mat(update_K=True, confs=configs[indices])
+                feature_vector_I = K_I
+                fit_data_I = log_amps_I[indices] - prior_mean* np.sum(feature_vector_I, axis=1)
+                #fit_data_I -=jnp.mean(fit_data_I)
+                fit_data_I -= jnp.pi/2
+            
             else:
                 K_R=learning_R.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
                 K_I=learning_I.set_kernel_mat(update_K=True, confs=configs[indices]) 
@@ -179,37 +190,36 @@ def lasso_linear_sweeping(iterations: int, indices: list, hamiltonian, vs_R, vs_
 
             #Update the weights and the epsilon tensor held in the learning object.
             learning_R.valid_kern = abs(np.diag(K_R.conj().T.dot(K_R))) > learning_R.kern_cutoff
-            learning_I.valid_kern = abs(np.diag(K_I.conj().T.dot(K_I))) > learning_I.kern_cutoff
             learning_R.update_epsilon_with_weights()
+
+            learning_I.valid_kern = abs(np.diag(K_I.conj().T.dot(K_I))) > learning_I.kern_cutoff
             learning_I.update_epsilon_with_weights()
             
             #Convert the learnt qGPS model into log wavefunction amplitudes.
         
-            estimated_log_amps_R = vs_R._apply_fun({"params": {"epsilon": learning_R.epsilon}}, configs)
-            estimated_log_amps_I = vs_I._apply_fun({"params": {"epsilon": learning_I.epsilon}}, configs)
+            estimated_log_amps_R = vs_R._apply_fun({"params": {"epsilon": learning_R.epsilon}}, configs) #Real Valued
+            estimated_log_amps_I = vs_I._apply_fun({"params": {"epsilon": learning_I.epsilon}}, configs) #Real Valued
 
-            estimated_log_amps = estimated_log_amps_R + estimated_log_amps_I*1j
+            #Recombination of the real and imaginary components of the log amplitudes.
+            estimated_log_amps = estimated_log_amps_R + estimated_log_amps_I*1j #Complex Valued
 
 
         #Testing
         #estimated_log_amps = vs._apply_fun({"params": {"epsilon": learning.epsilon}}, configs)
-        overlaps.append(overlap(estimated_log_amps, log_amps_R + log_amps_I*1j))
+        overlaps_R.append(overlap(estimated_log_amps_R, log_amps_R)) #Overlap of Real valued against Real valued
+        overlaps_I.append(overlap(jnp.imag(estimated_log_amps), log_amps_I))
+        #print(log_amps_R)
+        print("estimated log amps:" +str(estimated_log_amps_R))
+        print("Overlap:" +str(overlap(estimated_log_amps_R, log_amps_R)))
+        overlaps.append(overlap(estimated_log_amps, log_amps_R + log_amps_I))
+        #print(overlap(estimated_log_amps_R, log_amps_R))
+        #print(overlap(estimated_log_amps, log_amps_R + log_amps_I))
+        #input()
         #alphas.append(model.alpha_)
         #features.append(n_features_removed(learning.epsilon))
-
-    """with open('OM'+str(m)+'.txt', 'w') as f:
-        for element in overlaps:
-            f.write(f"{element}\n")
-    with open('AM'+str(m)+'.txt', 'w') as g:
-        for element in alphas:
-            g.write(f"{element}\n")
-    with open('FM'+str(m)+'.txt', 'w') as f:
-        for element in features:
-            f.write(f"{element}\n")"""
-        
         
             
-    return estimated_log_amps, overlaps, vs_R, vs_I
+    return estimated_log_amps, overlaps, overlaps_R, overlaps_I, vs_R, vs_I
 
 
 def n_features_removed(epsilon_tensor):
@@ -303,6 +313,8 @@ def overlap(log_amps_1, log_amps_2):
         Overlap: (float) The magnitude of the dot product between the two sets of wavefunction amplitudes.
     """
 
+
+
     #Normalises the wavefunction amplitudes.
     
     amps_1  = jnp.exp(log_amps_1)
@@ -312,7 +324,7 @@ def overlap(log_amps_1, log_amps_2):
             
     #Computes the overlap of wavefunction data provided.
     
-    return abs(jnp.conjugate(amps_1).T.dot(amps_2)) 
+    return abs(jnp.conjugate(amps_1).dot(amps_2))
 
 def reformat_epsilon(epsilon):
     epsilon_ = []
@@ -338,15 +350,44 @@ def export_epsilon(epsilon, title):
 
     return None
 
-
-vs_R, vs_I, ha = initialise_test_system(L=6, M = 8, seed = 1)
-estimated_log_amps, o, vs_R, vs_I = lasso_linear_sweeping(
-    50,
-    int(0.8*len(ha.hilbert.all_states())),
+vs_R, vs_I, ha = initialise_test_system(L=12, M = 12, seed = 1, j2 = 1)
+"""configs, log_amps_R, log_amps_I = generate_test_data(ha)
+with open("AA.txt", "w") as f:
+    for i in range(924):
+        f.write(f"{log_amps_R[i] + 1j*log_amps_I[i]}\n")
+print(len(ha.hilbert.all_states()))
+input()"""
+estimated_log_amps, o,oR,oI, vs_R, vs_I = lasso_linear_sweeping(
+    100,
+    int(len(ha.hilbert.all_states())),
     ha,
     vs_R,
     vs_I, 
     True,
     False,
     )
+
+with open("AR.txt", "w") as f:
+    for element in estimated_log_amps:
+        f.write(f"{jnp.real(element)}\n")
+with open("AI.txt", "w") as f:
+    for element in estimated_log_amps:
+        f.write(f"{jnp.imag(element)}\n")
+
+print(oR)
+print(jnp.real(estimated_log_amps))
+
+#print("Real Overlap" + str(oR[-1]))
+#print("Imag Overlap" +str(oI[-1]))
+#print("Total Overlap" + str(o[-1]))
+#print("Imag E Amps" +str(jnp.imag(estimated_log_amps)))
+#print("Imag Overlap Manual" + str(overlap(jnp.imag(estimated_log_amps), lI)))
+#print("Real E Amps" + str(jnp.real(estimated_log_amps)))
+#print("Real Amps" + str(lR))
+
+"""configs, lR, lI = generate_test_data(ha)
+lA = lR + lI*1j
+print(overlap(lR,lR))
+print(overlap(lI,lI))
+print(overlap(lA,lA))"""
 
