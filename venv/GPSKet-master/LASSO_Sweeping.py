@@ -153,8 +153,9 @@ def lasso_linear_sweeping(iterations: int, indices: list, hamiltonian, vs_R, vs_
                 K_R=learning_R.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
                 feature_vector_R = scalings[indices]*K_R
 
-                fit_data_R = scalings[indices].flatten()*(log_amps_R[indices])-(prior_mean*np.sum(feature_vector_R, axis=1))
-                fit_data_R -=jnp.mean(fit_data_R)
+                fit_data_R = log_amps_R[indices] - jnp.mean(log_amps_R[indices])
+
+                fit_data_R = scalings[indices].flatten()*(fit_data_R)-(prior_mean*np.sum(feature_vector_R, axis=1))
 
                 #K_I=learning_I.set_kernel_mat(update_K=True, confs=configs[indices])
                 #feature_vector_I = scalings[indices]*K_I
