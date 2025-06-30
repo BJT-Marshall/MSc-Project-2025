@@ -146,12 +146,9 @@ def lasso_linear_sweeping(iterations: int, indices: list, hamiltonian, vs_R, vs_
 
             #if flag: target data and feature vector both individually scaled by |psi|_predicted at each iteration
             if scaling:
-                    
-                if jnp.linalg.norm(estimated_log_amps_R) != 0:
-                    log_scalings = estimated_log_amps_R/jnp.linalg.norm(estimated_log_amps_R)
-                else:
-                    log_scalings = estimated_log_amps_R
-                scalings = jnp.expand_dims(jnp.exp(log_scalings)/jnp.max(jnp.exp(log_scalings)), -1)
+
+                log_scalings = estimated_log_amps_R - jnp.max(estimated_log_amps_R)
+                scalings = jnp.expand_dims(jnp.exp(log_scalings), -1)
                     
                 K_R=learning_R.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
                 feature_vector_R = scalings[indices]*K_R
