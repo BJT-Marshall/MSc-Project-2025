@@ -22,6 +22,7 @@ from sklearn.linear_model import LassoCV
 from sklearn.linear_model import Lasso
 from sklearn.linear_model import LinearRegression
 from sklearn.linear_model import Ridge
+from sklearn.linear_model import RidgeCV
 
 import matplotlib.pyplot as plt
 
@@ -85,7 +86,7 @@ def lossfun(
         weightings * jnp.abs(sampled_log_amps - (log_amps[indices])) ** 2
     )
 
-def lasso_linear_sweeping(iterations: int, indices: list, hamiltonian, vs_R, vs_I, scaling, n_models):
+def ridge_sweeping(iterations: int, indices: list, alpha = 0.001 ,hamiltonian = None, vs_R = None, vs_I = None, scaling = True, n_models = False):
 
     configs, log_amps_R, log_amps_I = generate_test_data(hamiltonian)    
     epsilon_R = np.array(vs_R.parameters["epsilon"])  # reset the epsilon tensor
@@ -99,21 +100,24 @@ def lasso_linear_sweeping(iterations: int, indices: list, hamiltonian, vs_R, vs_
     
     #Initial set of estimated log wavefunction amplitudes to be used for initial scaling
     estimated_log_amps_R = vs_R._apply_fun({"params": {"epsilon": learning_R.epsilon}}, configs)
+    
+    estimated_log_amps_I = vs_I._apply_fun({"params": {"epsilon": learning_I.epsilon}}, configs)
+    estimated_log_amps = estimated_log_amps_R + estimated_log_amps_I*1j
+
+    if type(alpha) == int:
+        alpha =[alpha,alpha]
 
     #Define a LASSO Learning model for each site.
     if n_models:
-        lasso_models_R = []
-        lasso_models_I = []
+        ridge_models_R = []
+        ridge_models_I = []
         for s in np.arange(epsilon_R.shape[-1]):
-            lasso_models_R.append(LassoCV(eps=0.001, fit_intercept=False, cv=3, max_iter=5000))
-            lasso_models_I.append(LinearRegression(fit_intercept=False))
+            ridge_models_R.append(Ridge(alpha= alpha[0], max_iter = 5000, fit_intercept= False))
+            ridge_models_I.append(Ridge(alpha= alpha[1], max_iter = 5000, fit_intercept= False))
     
     else:
-        alpha = 10**(-4)
-        lasso_models_R = Ridge(alpha= alpha, max_iter = 5000, fit_intercept= False)
-        #lasso_models_R = Lasso(alpha = 10**(-7), fit_intercept=False, max_iter=5000)
-        #lasso_models_R = LassoCV(alphas = [0], eps=0.00001, fit_intercept=False, cv=3, max_iter=5000)
-        lasso_models_I = LinearRegression(fit_intercept=False)
+        ridge_models_R = Ridge(alpha= alpha[0], max_iter = 5000, fit_intercept= False)
+        ridge_models_I = Ridge(alpha = alpha[1], max_iter = 5000, fit_intercept= False)
 
     #Testing
     overlaps = []
@@ -125,28 +129,26 @@ def lasso_linear_sweeping(iterations: int, indices: list, hamiltonian, vs_R, vs_
     elif type(indices) == list:
         indices = jnp.array(indices)
 
-    #Fitting Loop
-    for i in range(iterations):
+    if type(iterations) == int:
+        iterations = [iterations, iterations]
+    
+
+    #Real Estimator Fitting Loop
+    for i in range(iterations[0]):
         
         #Running the sweeping for each different alpha to calibrate regularization
         
         for site in np.arange(epsilon_R.shape[-1]):
 
             learning_R.reset()
-            learning_I.reset()
                 
             learning_R.ref_sites = site
-            learning_I.ref_sites = site
                 
             if n_models:
-                model_R = lasso_models_R[site]
-                model_I = lasso_models_I[site]
+                model_R = ridge_models_R[site]
             else:
-                model_R = lasso_models_R
-                model_I = lasso_models_I    
+                model_R = ridge_models_R
 
-            #current_alpha = 1-jnp.exp(-i/iterations)
-            #lasso_models_R.alpha = float(current_alpha*alpha)
                 
                 
             prior_mean = 1.0 if site != 0 else 0.0
@@ -154,76 +156,120 @@ def lasso_linear_sweeping(iterations: int, indices: list, hamiltonian, vs_R, vs_
             #if flag: target data and feature vector both individually scaled by |psi|_predicted at each iteration
             if scaling:
                 estimated_log_amps_R = vs_R._apply_fun({"params": {"epsilon": learning_R.epsilon}}, configs)
-                print(estimated_log_amps_R)
-                #input()
                 log_scalings = estimated_log_amps_R - jnp.log(jnp.linalg.norm(jnp.exp(estimated_log_amps_R)))
-                
-                #- jnp.mean(estimated_log_amps_R)
-                #scalings = jnp.expand_dims(jnp.exp(log_scalings)/jnp.sqrt(jnp.mean((abs(jnp.exp(log_scalings))**2))), -1)
                 scalings = jnp.expand_dims(jnp.exp(log_scalings), -1)
-                print(scalings)
-                #input() #THIS ONE
-
+            
                 K_R=learning_R.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
                 feature_vector_R = scalings[indices]*K_R 
-
-                print("Overlap:" +str(overlap(estimated_log_amps_R, log_amps_R)))
-                fit_data_R = log_amps_R[indices]
-                #- jnp.mean(log_amps_R[indices])
-                #- jnp.max(log_amps_R[indices])
-                #print(fit_data_R)
+                print(feature_vector_R)
+                print("feature vector")
                 #input()
-
+                
+                fit_data_R = log_amps_R[indices]
                 fit_data_R = scalings[indices].flatten()*(fit_data_R)-(prior_mean*np.sum(feature_vector_R, axis=1))
                 print(fit_data_R)
+                print("fit_data")
                 #input()
-                print(feature_vector_R)
-                #input() #THIS ONE
-
-                #K_I=learning_I.set_kernel_mat(update_K=True, confs=configs[indices])
-                #feature_vector_I = scalings[indices]*K_I
-                #fit_data_I = scalings[indices].flatten()*(log_amps_I[indices]) -(prior_mean*np.sum(feature_vector_I, axis=1))
-                #fit_data_I -=jnp.mean(fit_data_I)
-
-                #TEST
-                K_I=learning_I.set_kernel_mat(update_K=True, confs=configs[indices])
-                feature_vector_I = K_I
-                fit_data_I = log_amps_I[indices] - prior_mean* np.sum(feature_vector_I, axis=1)
-                #fit_data_I -=jnp.mean(fit_data_I)
-                fit_data_I -= jnp.pi/2
             
             else:
                 K_R=learning_R.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
-                K_I=learning_I.set_kernel_mat(update_K=True, confs=configs[indices]) 
                 feature_vector_R = K_R
-                feature_vector_I = K_I
                 fit_data_R = log_amps_R[indices] - prior_mean* np.sum(feature_vector_R, axis=1)
-                fit_data_I = log_amps_I[indices] - prior_mean* np.sum(feature_vector_I, axis=1)
                     
 
             #Fitting the model (Computes the optimal weights 'w' that fits the feature vector to the fit data)
             optimal_weights_R = model_R.fit(X=feature_vector_R, y=fit_data_R).coef_
-            optimal_weights_I = model_I.fit(X=feature_vector_I, y=fit_data_I).coef_
 
             print(optimal_weights_R)
-            #input() #THIS ONE
+            print("weights")
+            #input()
 
             #revert the prior mean adjustment above
             learning_R.weights = optimal_weights_R + prior_mean
-            learning_I.weights = optimal_weights_I + prior_mean
 
             #Update the weights and the epsilon tensor held in the learning object.
             learning_R.valid_kern = abs(np.diag(K_R.conj().T.dot(K_R))) > learning_R.kern_cutoff
             learning_R.update_epsilon_with_weights()
+            
+            #Convert the learnt qGPS model into log wavefunction amplitudes.
+        
+            estimated_log_amps_R = vs_R._apply_fun({"params": {"epsilon": learning_R.epsilon}}, configs) #Real Valued
+            print(estimated_log_amps_R)
+            print("e log amps")
+            #input()
+        estimated_log_amps_R = vs_R._apply_fun({"params": {"epsilon": learning_R.epsilon}}, configs) #Real Valued
+        print(estimated_log_amps_R)
+        print("e log amps")
+        #input()
+        
+        overlaps_R.append(float(overlap(estimated_log_amps_R, log_amps_R))) #Overlap of Real valued against Real valued
+
+    #Imaginary Estimator Loop -------------------------------------------------------------------------------------------------------------------
+
+    for i in range(iterations[1]):
+        
+        #Running the sweeping for each different alpha to calibrate regularization
+        
+        for site in np.arange(epsilon_R.shape[-1]):
+
+            learning_I.reset()
+            
+            learning_I.ref_sites = site
+                
+            if n_models:
+                model_I = ridge_models_I[site]
+            else:
+                model_I = ridge_models_I    
+
+                
+                
+            prior_mean = 1.0 if site != 0 else 0.0
+
+            #if flag: target data and feature vector both individually scaled by |psi|_predicted at each iteration
+            if scaling:
+                estimated_log_amps_R = vs_R._apply_fun({"params": {"epsilon": learning_R.epsilon}}, configs)
+                log_scalings = estimated_log_amps_R - jnp.log(jnp.linalg.norm(jnp.exp(estimated_log_amps_R)))
+                scalings = jnp.expand_dims(jnp.exp(log_scalings), -1)
+            
+                K_I=learning_I.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method 
+                feature_vector_I = scalings[indices]*K_I 
+
+                
+                fit_data_I = log_amps_I[indices]
+                phase_shift = jnp.mean(fit_data_I)
+                fit_data_I -=phase_shift
+                fit_data_I = scalings[indices].flatten()*(fit_data_I)-(prior_mean*np.sum(feature_vector_I, axis=1))
+
+                """#TEST
+                K_I=learning_I.set_kernel_mat(update_K=True, confs=configs[indices])
+                feature_vector_I = K_I
+                fit_data_I = log_amps_I[indices] - prior_mean* np.sum(feature_vector_I, axis=1)
+                #fit_data_I -=jnp.mean(fit_data_I)
+                fit_data_I -= jnp.pi/2"""
+            
+            else:
+                K_I=learning_I.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
+                feature_vector_I = K_I
+                fit_data_I = log_amps_I[indices] - prior_mean* np.sum(feature_vector_I, axis=1)
+                    
+
+            #Fitting the model (Computes the optimal weights 'w' that fits the feature vector to the fit data)
+            optimal_weights_I = model_I.fit(X=feature_vector_I, y=fit_data_I).coef_
+
+            print(optimal_weights_I)
+            #input()
+
+            #revert the prior mean adjustment above
+            learning_I.weights = optimal_weights_I + prior_mean
+
+            #Update the weights and the epsilon tensor held in the learning object.
 
             learning_I.valid_kern = abs(np.diag(K_I.conj().T.dot(K_I))) > learning_I.kern_cutoff
             learning_I.update_epsilon_with_weights()
             
             #Convert the learnt qGPS model into log wavefunction amplitudes.
-        
-            estimated_log_amps_R = vs_R._apply_fun({"params": {"epsilon": learning_R.epsilon}}, configs) #Real Valued
             estimated_log_amps_I = vs_I._apply_fun({"params": {"epsilon": learning_I.epsilon}}, configs) #Real Valued
-
+            estimated_log_amps_I +=phase_shift
 
             #Recombination of the real and imaginary components of the log amplitudes.
             estimated_log_amps = estimated_log_amps_R + estimated_log_amps_I*1j #Complex Valued
@@ -231,24 +277,10 @@ def lasso_linear_sweeping(iterations: int, indices: list, hamiltonian, vs_R, vs_
 
         #Testing
         #estimated_log_amps = vs._apply_fun({"params": {"epsilon": learning.epsilon}}, configs)
-        overlaps_R.append(overlap(estimated_log_amps_R, log_amps_R)) #Overlap of Real valued against Real valued
-        overlaps_I.append(overlap(jnp.imag(estimated_log_amps), log_amps_I))
-
-        print("estimated log amps:" +str(estimated_log_amps_R))
-
-        for i in range(len(log_amps_R)):
-            print(log_amps_R[i]-jnp.mean(log_amps_R), fit_data_R[i] - jnp.mean(fit_data_R) ,estimated_log_amps_R[i] - jnp.mean(estimated_log_amps_R))
-        print("Overlap:" +str(overlap(estimated_log_amps_R, log_amps_R)))
-        overlaps.append(overlap(estimated_log_amps, log_amps_R + log_amps_I))
-        #input() #THIS ONE
-        #print(overlap(estimated_log_amps_R, log_amps_R))
-        #print(overlap(estimated_log_amps, log_amps_R + log_amps_I))
-        #input()
-        #alphas.append(model.alpha_)
-        #features.append(n_features_removed(learning.epsilon))
-        
+        overlaps_I.append(float(overlap(estimated_log_amps_I, log_amps_I)))
+        overlaps.append(float(overlap(estimated_log_amps, log_amps_R + log_amps_I*1j)))
             
-    return estimated_log_amps, overlaps, overlaps_R, overlaps_I, vs_R, vs_I, log_amps_R
+    return estimated_log_amps, overlaps, overlaps_R, overlaps_I, vs_R, vs_I, learning_R.epsilon, learning_I.epsilon, log_amps_R + log_amps_I*1j, configs
 
 
 def n_features_removed(epsilon_tensor):
@@ -379,73 +411,47 @@ def export_epsilon(epsilon, title):
 
     return None
 
-vs_R, vs_I, ha = initialise_test_system(L=12, M = 25, seed = 1, j2 = 0.8)
-"""configs, log_amps_R, log_amps_I = generate_test_data(ha)
-with open("AA.txt", "w") as f:
-    for i in range(924):
-        f.write(f"{log_amps_R[i] + 1j*log_amps_I[i]}\n")
-print(len(ha.hilbert.all_states()))
-print(log_amps_I)
-input()"""
-estimated_log_amps, o,oR,oI, vs_R, vs_I, lR = lasso_linear_sweeping(
-    20,
-    int(len(ha.hilbert.all_states())),
-    ha,
-    vs_R,
-    vs_I, 
-    True,
-    False,
-    )
+def lasso_sweeping(iterations, indices, ha, scaling, vs_R, vs_I, epsilon_R, epsilon_I, log_amps, configs): 
 
-with open("AR.txt", "w") as f:
-    for element in estimated_log_amps:
-        f.write(f"{jnp.real(element)}\n")
-with open("AI.txt", "w") as f:
-    for element in estimated_log_amps:
-        f.write(f"{jnp.imag(element)}\n")
-
-print(oR)
-print(jnp.real(estimated_log_amps))
-print(jnp.exp(lR)/jnp.linalg.norm(jnp.exp(lR))-jnp.exp(jnp.real(estimated_log_amps))/jnp.linalg.norm(jnp.exp(jnp.real(estimated_log_amps))))
-#input()
-
-#print("Real Overlap" + str(oR[-1]))
-#print("Imag Overlap" +str(oI[-1]))
-#print("Total Overlap" + str(o[-1]))
-#print("Imag E Amps" +str(jnp.imag(estimated_log_amps)))
-#print("Imag Overlap Manual" + str(overlap(jnp.imag(estimated_log_amps), lI)))
-#print("Real E Amps" + str(jnp.real(estimated_log_amps)))
-#print("Real Amps" + str(lR))
-
-"""configs, lR, lI = generate_test_data(ha)
-lA = lR + lI*1j
-print(overlap(lR,lR))
-print(overlap(lI,lI))
-print(overlap(lA,lA))"""
-
-
-#What i want to do: Pass the vs_R object into a new function that evaluates a LASSO estimator using the "fit" vs_R object to fit to the data.
-
-def temp_Lasso(iterations, indices, ha, vs_R, scaling):
-    configs, log_amps_R, log_amps_I = generate_test_data(ha)    
-    epsilon_R = np.array(vs_R.parameters["epsilon"])  # reset the epsilon tensor
     learning_R = QGPSLogSpaceFit(
         epsilon_R
     )  # The way of interfacing the learning model with the qGPS state
+
+    learning_I = QGPSLogSpaceFit(
+        epsilon_I
+    ) # The way of interfacing the learning model with the qGPS state
     
-    e_log_amps = vs_R._apply_fun({"params": {"epsilon": learning_R.epsilon}}, configs)
-    lasso_models_R = LassoCV(eps=0.00001, fit_intercept=False, cv = 3, max_iter=5000)
+    #Sets of real and imaginary training data
+    log_amps_R = jnp.real(log_amps)
+    log_amps_I = jnp.imag(log_amps)   
+
+    #Estimated log amplitudes from the current qGPS model state
+    e_log_amps_R = vs_R._apply_fun({"params": {"epsilon": learning_R.epsilon}}, configs)
+    e_log_amps_I = vs_I._apply_fun({"params": {"epsilon": learning_I.epsilon}}, configs)
+    #print(e_log_amps)
+    #input()
+    
+    #LASSO learning models
+    lasso_model_I = Lasso(alpha = 0.00000001, fit_intercept=False, max_iter=5000)
+    lasso_model_R = Lasso(alpha = 0.000001, fit_intercept=False, max_iter=5000)
+    
+    #Handling the indices input to be used as training data
     if type(indices) == int:
         indices = jnp.array(sample([x for x in range(len(ha.hilbert.all_states()))], indices))
     elif type(indices) == list:
         indices = jnp.array(indices)
 
+    if type(iterations) == int:
+        iterations = [iterations, iterations]
+
     ov = []
+    ov_R=[]
+    ov_I=[]
     feat = []
     alphas =[]
 
-    #Fitting Loop
-    for i in range(iterations):
+    #Real Fitting Loop
+    for i in range(iterations[0]):
         
         #Running the sweeping for each different alpha to calibrate regularization
         
@@ -455,55 +461,49 @@ def temp_Lasso(iterations, indices, ha, vs_R, scaling):
                 
             learning_R.ref_sites = site
                 
-            
-            model_R = lasso_models_R
+            model_R = lasso_model_R
                 
                 
             prior_mean = 1.0 if site != 0 else 0.0
 
             #if flag: target data and feature vector both individually scaled by |psi|_predicted at each iteration
             if scaling:
-                e_log_amps = vs_R._apply_fun({"params": {"epsilon": learning_R.epsilon}}, configs)
-                print(e_log_amps)
-                #input()
-                log_scalings = e_log_amps - jnp.log(jnp.linalg.norm(jnp.exp(e_log_amps)))
-                
-                #- jnp.mean(estimated_log_amps_R)
-                #scalings = jnp.expand_dims(jnp.exp(log_scalings)/jnp.sqrt(jnp.mean((abs(jnp.exp(log_scalings))**2))), -1)
-                scalings = jnp.expand_dims(jnp.exp(log_scalings), -1)
-                print(scalings)
-                #input() #THIS ONE
+                e_log_amps_R = vs_R._apply_fun({"params": {"epsilon": learning_R.epsilon}}, configs)
 
+                #Scalings that dictate the relative importance of fitting each amplitude based on its amplitude 
+                log_scalings = e_log_amps_R - jnp.log(jnp.linalg.norm(jnp.exp(e_log_amps_R)))
+                scalings = jnp.expand_dims(jnp.exp(log_scalings), -1)
+
+                #Scaling of the kernel matrix and fit data vector for both sets of training data
                 K_R=learning_R.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
                 feature_vector_R = scalings[indices]*K_R 
 
-                print("Overlap:" +str(overlap(e_log_amps, log_amps_R)))
                 fit_data_R = log_amps_R[indices]
-                #- jnp.mean(log_amps_R[indices])
-                #- jnp.max(log_amps_R[indices])
-                #print(fit_data_R)
-                #input()
 
                 fit_data_R = scalings[indices].flatten()*(fit_data_R)-(prior_mean*np.sum(feature_vector_R, axis=1))
-                print(fit_data_R)
-                #input()
-                print(feature_vector_R)
-                #input() #THIS ONE
             
             else:
                 K_R=learning_R.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
                 feature_vector_R = K_R
-                fit_data_R = log_amps_R[indices] - prior_mean* np.sum(feature_vector_R, axis=1)
+                fit_data_R = log_amps_R[indices]
                     
 
             #Fitting the model (Computes the optimal weights 'w' that fits the feature vector to the fit data)
             optimal_weights_R = model_R.fit(X=feature_vector_R, y=fit_data_R).coef_
 
-            print(optimal_weights_R)
-            #input() #THIS ONE
-
             #revert the prior mean adjustment above
             learning_R.weights = optimal_weights_R + prior_mean
+            #global_weight = jnp.max(abs(optimal_weights_R))
+            #print(global_weight)
+            #input()
+
+            #if global_weight == 0:
+                #learning_R.weights = jnp.array([1 for x in range(len(optimal_weights_R))])
+            #else:
+                #learning_R.weights = optimal_weights_R/global_weight
+
+            #print(learning_R.weights)
+            #input()
 
             #Update the weights and the epsilon tensor held in the learning object.
             learning_R.valid_kern = abs(np.diag(K_R.conj().T.dot(K_R))) > learning_R.kern_cutoff
@@ -511,37 +511,225 @@ def temp_Lasso(iterations, indices, ha, vs_R, scaling):
 
             
             #Convert the learnt qGPS model into log wavefunction amplitudes.
+            e_log_amps_R = vs_R._apply_fun({"params": {"epsilon": learning_R.epsilon}}, configs) #Real Valued
+
+
+    for i in range(iterations[1]):
+            #Running the sweeping for each different alpha to calibrate regularization
         
-            e_log_amps = vs_R._apply_fun({"params": {"epsilon": learning_R.epsilon}}, configs) #Real Valued
+        for site in np.arange(epsilon_R.shape[-1]):
 
-        print("estimated log amps:" +str(e_log_amps))
+            learning_I.reset()
+                
+            learning_I.ref_sites = site
+                
+            model_I = lasso_model_I
+                
+                
+            prior_mean = 1.0 if site != 0 else 0.0
 
-        for i in range(len(log_amps_R)):
-            print(log_amps_R[i]-jnp.mean(log_amps_R), fit_data_R[i] - jnp.mean(fit_data_R) ,e_log_amps[i] - jnp.mean(e_log_amps))
-        print("Overlap:" +str(overlap(e_log_amps, log_amps_R)))
-        ov.append(overlap(e_log_amps, log_amps_R ))
+            #if flag: target data and feature vector both individually scaled by |psi|_predicted at each iteration
+            if scaling:
+
+                #Scalings that dictate the relative importance of fitting each amplitude based on its amplitude 
+                log_scalings = e_log_amps_R - jnp.log(jnp.linalg.norm(jnp.exp(e_log_amps_R)))
+                scalings = jnp.expand_dims(jnp.exp(log_scalings), -1)
+
+                #Scaling of the kernel matrix and fit data vector for both sets of training data
+                K_I=learning_I.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
+                feature_vector_I = scalings[indices]*K_I 
+                
+                print(log_amps_I)
+                #input()
+                fit_data_I = log_amps_I[indices]
+                print(fit_data_I)
+                #input()
+
+
+                fit_data_I = scalings[indices].flatten()*(fit_data_I)-(prior_mean*np.sum(feature_vector_I, axis=1))
+                #fit_data_I = fit_data_I*jnp.pi/jnp.max(fit_data_I)
+                print(fit_data_I)
+                #input()
+            
+            else: 
+                K_I=learning_I.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method
+                feature_vector_I = K_I
+                fit_data_I = log_amps_I[indices]- jnp.pi/2 
+                    
+
+            #Fitting the model (Computes the optimal weights 'w' that fits the feature vector to the fit data)
+            optimal_weights_I = model_I.fit(X=feature_vector_I, y=fit_data_I).coef_
+
+
+            #revert the prior mean adjustment above
+            learning_I.weights = optimal_weights_I + prior_mean
+            #global_weight = jnp.max(abs(optimal_weights_R))
+            #print(global_weight)
+            #input()
+
+            #if global_weight == 0:
+                #learning_R.weights = jnp.array([1 for x in range(len(optimal_weights_R))])
+            #else:
+                #learning_R.weights = optimal_weights_R/global_weight
+
+            #print(learning_R.weights)
+            #input()
+
+            #Update the weights and the epsilon tensor held in the learning object.
+            learning_I.valid_kern = abs(np.diag(K_I.conj().T.dot(K_I))) > learning_I.kern_cutoff
+            learning_I.update_epsilon_with_weights()
+
+            
+            #Convert the learnt qGPS model into log wavefunction amplitudes.
+
+            e_log_amps_I = vs_I._apply_fun({"params": {"epsilon": learning_I.epsilon}}, configs) #Real Valued
+
+        #for i in range(len(log_amps_R)):
+            #print(log_amps_R[i]-jnp.mean(log_amps_R), fit_data_R[i] - jnp.mean(fit_data_R) ,e_log_amps_R[i] - jnp.mean(e_log_amps_R))
+        e_log_amps = e_log_amps_R + e_log_amps_I*1j
+        #print("Overlap:" +str(overlap(e_log_amps, log_amps)))
+        #input()
+        ov.append(overlap(e_log_amps, log_amps))
+        ov_R.append(overlap(e_log_amps_R, log_amps_R))
+        ov_I.append(overlap(e_log_amps_I, fit_data_I))
         feat.append(n_features_removed(learning_R.epsilon))
-        alphas.append(model_R.alpha_)
+        alphas.append(model_R.alpha)
+        print(e_log_amps_I)
+        #input()
         
-        
+
+    return e_log_amps, ov, ov_R, ov_I, feat, alphas, fit_data_I
 
 
 
-    return e_log_amps, ov, feat, alphas
+vs_R, vs_I, ha = initialise_test_system(L=8, M = 25, seed = 1, j2 = 0.6)
+"""configs, log_amps_R, log_amps_I = generate_test_data(ha)
+with open("AA.txt", "w") as f:
+    for i in range(len(ha.hilbert.all_states())):
+        f.write(f"{log_amps_R[i] + 1j*log_amps_I[i]}\n")
+print(len(ha.hilbert.all_states()))
+print(log_amps_I)
+print(log_amps_R)
+input()"""
+
+estimated_log_amps, o,oR,oI, vs_R, vs_I, epsilon_R, epsilon_I, log_amps, configs= ridge_sweeping(
+        [50,50],
+        int(len(ha.hilbert.all_states())),
+        [0.1,0],
+        ha,
+        vs_R,
+        vs_I, 
+        True,
+        False,
+        )
+with open("AA.txt", "w") as f:
+    for i in range(len(ha.hilbert.all_states())):
+        f.write(f"{complex(log_amps[i])}\n")
+with open("FEALFIT.txt", "w") as f:
+    for element in log_amps:
+        f.write(f"{float(jnp.real(element))}\n")
+with open("REALE.txt", "w") as f:
+    for element in estimated_log_amps:
+        f.write(f"{jnp.real(complex(element))}\n")
+with open("IMAGFIT.txt", "w") as f:
+    for element in log_amps:
+        f.write(f"{float(jnp.imag(element))}\n")
+with open("IMAGE.txt", "w") as f:
+    for element in estimated_log_amps:
+        f.write(f"{jnp.imag(complex(element))}\n")
+
+print(oR)
+print(oI)
+print(o)
+print(len(ha.hilbert.all_states()))
+input()
+print(jnp.imag(log_amps))
+input()
+
+e_log_amps, ov, ov_R, ov_I, feat, alphas, f_I = lasso_sweeping(
+        [50,100],
+        int(len(ha.hilbert.all_states())),
+        ha,
+        True,
+        vs_R,
+        vs_I,
+        epsilon_R,
+        epsilon_I,
+        log_amps,
+        configs
+        )
+
+print(ov)
+print(ov_R)
+print(ov_I)
+
+with open("IMAGFIT.txt", "w") as f:
+    for element in f_I:
+        f.write(f"{float(element)}\n")
+with open("IMAGE.txt", "w") as f:
+    for element in e_log_amps:
+        f.write(f"{jnp.imag(complex(element))}\n")
 
 input()
 
-e_log_amps, ov, feat, alphas = temp_Lasso(
-    50,
-    int(len(ha.hilbert.all_states())),
-    ha,
-    vs_R,
-    True
-    )
+overlaps = []
+#for iteration_set in [[10,[50,50]],[10,[100,100]],[20,[50,50]],[20,[100,100]],[30,[50,50]],[30,[100,100]]]:
+#for iteration_set in [[0,[50,50]],[0,[100,100]]]:
+for iteration_set in [[10,[50,100]], [100,[50,200]]]:
+
+    estimated_log_amps, o,oR,oI, vs_R, vs_I, epsilon_R, epsilon_I, log_amps, configs= ridge_sweeping(
+        iteration_set[0],
+        int(len(ha.hilbert.all_states())),
+        0.001,
+        ha,
+        vs_R,
+        vs_I, 
+        True,
+        False,
+        )
+
+    e_log_amps, ov, ov_R, ov_I, feat, alphas = lasso_sweeping(
+        iteration_set[1],
+        int(len(ha.hilbert.all_states())),
+        ha,
+        True,
+        vs_R,
+        vs_I,
+        epsilon_R,
+        epsilon_I,
+        log_amps,
+        configs
+        )
+    overlaps.append([overlap(estimated_log_amps,log_amps),overlap(e_log_amps,log_amps),ov_R[-1], ov_I[-1]])
+    with open("SIGNAMPS"+str(iteration_set)+".txt", "w") as f:
+        for element in e_log_amps:
+            f.write(f"{float(jnp.imag(element))}\n")
+    with open("TESTROSIGN1"+str(iteration_set)+".txt", "w") as f:
+        for element in o:
+            f.write(f"{float(element)}\n")
+    with open("TESTLOSIGN1"+str(iteration_set)+".txt", "w") as f:
+        for element in ov:
+            f.write(f"{float(element)}\n")
+
+
+print([[10,50],[10,100],[20,50],[20,100],[30,50],[30,100]])
+print(overlaps)
+#input()
+
+"""with open("AR.txt", "w") as f:
+    for element in estimated_log_amps:
+        f.write(f"{jnp.real(element)}\n")
+with open("AI.txt", "w") as f:
+    for element in estimated_log_amps:
+        f.write(f"{jnp.imag(element)}\n")
+
+print(oR)
+print(jnp.real(estimated_log_amps))
+#print(jnp.exp(lR)/jnp.linalg.norm(jnp.exp(lR))-jnp.exp(jnp.real(estimated_log_amps))/jnp.linalg.norm(jnp.exp(jnp.real(estimated_log_amps))))
 
 print(ov)
 print(feat)
 print(alphas)
 with open("ARLASSO.txt", "w") as f:
     for element in e_log_amps:
-        f.write(f"{jnp.real(element)}\n")
+        f.write(f"{jnp.real(element)}\n")"""
