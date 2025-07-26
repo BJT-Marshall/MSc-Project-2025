@@ -571,18 +571,18 @@ def lasso_sweeping(iterations, alpha, indices, ha, M, scaling, log_amps, seed):
 
             #if flag: target data and feature vector both individually scaled by |psi|_predicted at each iteration
             if scaling:
-                estimated_log_amps_R = vs_R._apply_fun({"params": {"epsilon": learning_R.epsilon}}, configs)
+                estimated_log_amps_R = vs_R._apply_fun({"params": {"epsilon": learning_R.epsilon}}, configs[configs])
                 log_scalings = estimated_log_amps_R - jnp.log(jnp.linalg.norm(jnp.exp(estimated_log_amps_R)))
                 scalings = jnp.expand_dims(jnp.exp(log_scalings), -1)
             
                 K_I=learning_I.set_kernel_mat(update_K=True, confs=configs[indices]) #sampled amplitudes converted to configs as demanded by the 'set_kernel_mat' method 
-                feature_vector_I = scalings[indices]*K_I 
+                feature_vector_I = scalings*K_I 
 
                 
                 fit_data_I = log_amps_I[indices]
                 phase_shift = jnp.sum(((jnp.exp(log_amps_I[indices])/jnp.linalg.norm(jnp.exp(log_amps_I[indices])))**2).flatten()*fit_data_I)
                 fit_data_I -=phase_shift
-                fit_data_I = scalings[indices].flatten()*(fit_data_I) #-(prior_mean*np.sum(feature_vector_I, axis=1))
+                fit_data_I = scalings.flatten()*(fit_data_I) #-(prior_mean*np.sum(feature_vector_I, axis=1))
 
             
             else:
